@@ -115,45 +115,14 @@ pub enum SnapshotShowResult {
 pub struct CompileAccepted {
     pub task_id: String,
     pub status: String,
-    pub to: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileErrorInfo {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileResult {
-    #[serde(rename = "from")]
-    pub from_uris: Vec<String>,
-    pub to: String,
-    pub skill: String,
-    pub okf_version: String,
     #[serde(default)]
-    pub created: Vec<String>,
+    pub to: Option<String>,
     #[serde(default)]
-    pub updated: Vec<String>,
+    pub task_type: Option<String>,
     #[serde(default)]
-    pub unchanged: Vec<String>,
-    pub page_count: usize,
-    pub link_count: usize,
+    pub stage: Option<String>,
     #[serde(default)]
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileTaskStatus {
-    pub task_id: String,
-    pub status: String,
-    pub stage: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub result: Option<CompileResult>,
-    #[serde(default)]
-    pub error: Option<CompileErrorInfo>,
+    pub resource_id: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -165,7 +134,7 @@ struct CompileCreateRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    runtime_timeout_seconds: Option<f64>,
+    args: Option<&'a serde_json::Map<String, Value>>,
 }
 
 // ============ HttpClient ============
@@ -358,20 +327,16 @@ impl HttpClient {
         to: &str,
         skill: &str,
         reason: Option<&str>,
-        runtime_timeout_seconds: Option<f64>,
+        args: Option<&serde_json::Map<String, Value>>,
     ) -> Result<CompileAccepted> {
         let body = CompileCreateRequest {
             from_uris,
             to,
             skill,
             reason,
-            runtime_timeout_seconds,
+            args,
         };
-        self.post("/bot/v1/compile", &body).await
-    }
-
-    pub async fn get_compile(&self, task_id: &str) -> Result<CompileTaskStatus> {
-        self.get(&format!("/bot/v1/compile/{task_id}"), &[]).await
+        self.post("/api/v1/compile", &body).await
     }
 
     pub async fn read(&self, uri: &str) -> Result<String> {
@@ -587,6 +552,10 @@ impl HttpClient {
         abs_limit: i32,
         show_all_hidden: bool,
         node_limit: i32,
+        offset: i32,
+        limit: Option<i32>,
+        sort_by: Option<&str>,
+        sort_order: Option<&str>,
         extra_fields: &[String],
         tags: &[String],
         include_tags: bool,
@@ -600,6 +569,18 @@ impl HttpClient {
             ("show_all_hidden".to_string(), show_all_hidden.to_string()),
             ("node_limit".to_string(), node_limit.to_string()),
         ];
+        if offset != 0 {
+            params.push(("offset".to_string(), offset.to_string()));
+        }
+        if let Some(limit) = limit {
+            params.push(("limit".to_string(), limit.to_string()));
+        }
+        if let Some(sort_by) = sort_by {
+            params.push(("sort_by".to_string(), sort_by.to_string()));
+            if let Some(sort_order) = sort_order {
+                params.push(("sort_order".to_string(), sort_order.to_string()));
+            }
+        }
         for field in extra_fields {
             params.push(("extra_fields".to_string(), field.clone()));
         }
@@ -620,6 +601,8 @@ impl HttpClient {
         show_all_hidden: bool,
         node_limit: i32,
         level_limit: i32,
+        offset: i32,
+        limit: Option<i32>,
         extra_fields: &[String],
         tags: &[String],
         include_tags: bool,
@@ -632,6 +615,12 @@ impl HttpClient {
             ("node_limit".to_string(), node_limit.to_string()),
             ("level_limit".to_string(), level_limit.to_string()),
         ];
+        if offset != 0 {
+            params.push(("offset".to_string(), offset.to_string()));
+        }
+        if let Some(limit) = limit {
+            params.push(("limit".to_string(), limit.to_string()));
+        }
         for field in extra_fields {
             params.push(("extra_fields".to_string(), field.clone()));
         }
@@ -1307,20 +1296,12 @@ impl HttpClient {
     // ============ Task Methods ============
 
     pub async fn get_task(&self, task_id: &str) -> Result<serde_json::Value> {
-        let path = if task_id.starts_with("cmp_") {
-            format!("/bot/v1/compile/{task_id}")
-        } else {
-            format!("/api/v1/tasks/{task_id}")
-        };
+        let path = format!("/api/v1/tasks/{task_id}");
         self.get(&path, &[]).await
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<serde_json::Value> {
-        let path = if task_id.starts_with("cmp_") {
-            format!("/bot/v1/compile/{task_id}/cancel")
-        } else {
-            format!("/api/v1/tasks/{task_id}/cancel")
-        };
+        let path = format!("/api/v1/tasks/{task_id}/cancel");
         self.post(&path, &serde_json::json!({})).await
     }
 
@@ -2301,14 +2282,64 @@ mod tests {
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
 
         client
-            .ls("viking://resources", false, false, "agent", 256, false, 1, &[], &[], false)
+            .ls(
+                "viking://resources",
+                false,
+                false,
+                "agent",
+                256,
+                false,
+                20,
+                4,
+                Some(5),
+                Some("mtime"),
+                Some("desc"),
+                &[],
+                &[],
+                false,
+            )
             .await
             .expect("ls request should succeed");
 
         let request = request_rx.await.expect("request should be captured");
         assert!(request.starts_with("GET /api/v1/fs/ls?"));
+        assert!(request.contains("node_limit=20"));
+        assert!(request.contains("offset=4"));
+        assert!(request.contains("limit=5"));
+        assert!(request.contains("sort_by=mtime"));
+        assert!(request.contains("sort_order=desc"));
         assert!(!request.contains("tz="));
         assert!(!request.contains("include_mod_time_iso="));
+
+        let (default_url, default_request_rx) = spawn_request_capture_server().await;
+        let default_client =
+            HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
+        default_client
+            .ls(
+                "viking://resources",
+                false,
+                false,
+                "agent",
+                256,
+                false,
+                20,
+                0,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                false,
+            )
+            .await
+            .expect("default ls request should succeed");
+        let default_request = default_request_rx
+            .await
+            .expect("default request should be captured");
+        assert!(!default_request.contains("offset="));
+        assert!(!default_request.contains("&limit="));
+        assert!(!default_request.contains("sort_by="));
+        assert!(!default_request.contains("sort_order="));
     }
 
     #[tokio::test]
@@ -2448,14 +2479,54 @@ mod tests {
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
 
         client
-            .tree("viking://resources", "agent", 256, false, 1, 3, &[], &[], false)
+            .tree(
+                "viking://resources",
+                "agent",
+                256,
+                false,
+                20,
+                3,
+                4,
+                Some(5),
+                &[],
+                &[],
+                false,
+            )
             .await
             .expect("tree request should succeed");
 
         let request = request_rx.await.expect("request should be captured");
         assert!(request.starts_with("GET /api/v1/fs/tree?"));
+        assert!(request.contains("node_limit=20"));
+        assert!(request.contains("offset=4"));
+        assert!(request.contains("limit=5"));
         assert!(!request.contains("tz="));
         assert!(!request.contains("include_mod_time_iso="));
+
+        let (default_url, default_request_rx) = spawn_request_capture_server().await;
+        let default_client =
+            HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
+        default_client
+            .tree(
+                "viking://resources",
+                "agent",
+                256,
+                false,
+                20,
+                3,
+                0,
+                None,
+                &[],
+                &[],
+                false,
+            )
+            .await
+            .expect("default tree request should succeed");
+        let default_request = default_request_rx
+            .await
+            .expect("default request should be captured");
+        assert!(!default_request.contains("offset="));
+        assert!(!default_request.contains("&limit="));
     }
 
     #[tokio::test]
@@ -2555,7 +2626,8 @@ mod tests {
             let mut buffer = vec![0; 4096];
             let read = stream.read(&mut buffer).await.expect("request should read");
             let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.contains(r#""runtime_timeout_seconds":86400.0"#));
+            assert!(request.contains(r#""skill":"viking://agent/skills/wiki""#));
+            assert!(request.contains(r#""args":{"model_name":"endpoint-1"}"#));
             let body = r#"{"status":"ok","result":{"task_id":"cmp_1","status":"accepted","to":"viking://resources/wiki"}}"#;
             let response = format!(
                 "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -2577,13 +2649,14 @@ mod tests {
             false,
             None,
         );
+        let args = serde_json::json!({"model_name": "endpoint-1"});
         let accepted = client
             .create_compile(
                 &["viking://resources/source".into()],
                 "viking://resources/wiki",
                 "viking://agent/skills/wiki",
                 None,
-                Some(86_400.0),
+                args.as_object(),
             )
             .await
             .expect("202 response body should deserialize");
@@ -2591,7 +2664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_methods_route_compile_ids_to_compile_endpoints() {
+    async fn task_methods_use_generic_task_endpoints_for_compile_ids() {
         let (base_url, status_request_rx) = spawn_request_capture_server().await;
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
         client
@@ -2601,7 +2674,7 @@ mod tests {
         let status_request = status_request_rx
             .await
             .expect("status request should be captured");
-        assert!(status_request.starts_with("GET /bot/v1/compile/cmp_1 "));
+        assert!(status_request.starts_with("GET /api/v1/tasks/cmp_1 "));
 
         let (base_url, cancel_request_rx) = spawn_request_capture_server().await;
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
@@ -2612,7 +2685,7 @@ mod tests {
         let cancel_request = cancel_request_rx
             .await
             .expect("cancel request should be captured");
-        assert!(cancel_request.starts_with("POST /bot/v1/compile/cmp_1/cancel "));
+        assert!(cancel_request.starts_with("POST /api/v1/tasks/cmp_1/cancel "));
     }
 
     #[tokio::test]

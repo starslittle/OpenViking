@@ -1,7 +1,9 @@
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
 
+import inspect
 import json
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -128,6 +130,13 @@ async def test_commit_retention_boundary_and_pending_tokens_after_reload(
     assert fresh.meta.pending_tokens == expected
 
 
+def test_phase2_auto_commit_policy_parameters_are_appended():
+    signature = inspect.signature(Session._run_memory_extraction)
+
+    assert list(signature.parameters)[-1] == "auto_commit_policy"
+    assert fields(SessionCommitMsg)[-1].name == "auto_commit_policy"
+
+
 @pytest.mark.asyncio
 async def test_resume_queued_commit_continues_phase2(monkeypatch):
     session_uri = "viking://user/default/sessions/session-1"
@@ -153,6 +162,7 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
         archive_uri=archive_uri,
         user={"account_id": "default", "user_id": "default"},
         memory_policy={"memory_types": []},
+        auto_commit_policy={"pending_token_threshold": 8000},
     )
 
     try:
@@ -163,6 +173,9 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
     session._run_memory_extraction.assert_awaited_once()
     assert session._run_memory_extraction.await_args.kwargs["task_id"] == "task-1"
     assert session._run_memory_extraction.await_args.kwargs["agent_evolution_enabled"] is True
+    assert session._run_memory_extraction.await_args.kwargs["auto_commit_policy"] == {
+        "pending_token_threshold": 8000
+    }
     assert [item.id for item in session._run_memory_extraction.await_args.kwargs["messages"]] == [
         "archived"
     ]
@@ -287,4 +300,5 @@ def test_session_commit_message_ignores_unknown_fields():
     )
 
     assert message.task_id == "task-1"
+    assert message.auto_commit_policy == {}
     assert "actor_peer_id" not in message.to_dict()
